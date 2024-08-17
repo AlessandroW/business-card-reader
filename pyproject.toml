@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "businesscard"
+version = "1.0.0"
+description = "GPT-4o-mini-based business card reader"
+authors = ["Alessandro Wollek <contact@wollek.ai>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+pdf2image = "^1.17.0"
+requests = "^2.32.3"
+
+
+[tool.poetry.group.dev.dependencies]
+jupyterlab = "^4.2.3"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

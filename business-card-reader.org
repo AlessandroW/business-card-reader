@@ -1,0 +1,118 @@
+#+title: Business Card Reader
+#+LAST_MODIFIED: [2024-08-17 Sat 14:40]
+
+#+begin_src emacs-lisp
+(defun auth-source-get-api-key ()
+  "Get OpenAI API key from auth-source, create if needed."
+  (let* ((auth-source-creation-defaults
+          '((description . "OpenAI API key")))
+         (auth-source-creation-prompts
+          '((secret . "OpenAI API key for %h: ")))
+         (auth-info (nth 0 (auth-source-search
+                            :max 1
+                            :host "api.openai.com"
+                            :user "chatgpt"))))
+    (if auth-info (auth-info-password auth-info)
+      (error "Could not retrieve API key\nSave machine api.openai.com port https login chatgpt password <your-api-key> in ~/.authinfo.gpg"))))
+#+end_src
+
+#+RESULTS:
+: auth-source-get-api-key
+
+
+#+begin_src emacs-lisp
+(require 'request)
+(require 'json)
+(require 'subr-x)
+
+(setq-local result "")
+
+(defun parse-business-card (file-path)
+  (unless (file-exists-p file-path)
+    (error "The file path '%s' does not exist." file-path))
+
+  (unless (file-regular-p file-path)
+    (error "The path '%s' is not a file." file-path))
+
+  (let* ((file-path (expand-file-name file-path))
+         (file-suffix (downcase (file-name-extension file-path)))
+         (jpg-path (concat (file-name-sans-extension file-path) ".jpg"))
+         (resized-path (concat (file-name-sans-extension file-path) "-resized.jpg")))
+    ;; Convert PDF to JPG if necessary
+    (when (string-equal file-suffix "pdf")
+      (unless (file-exists-p jpg-path)
+        (message "Converting '%s' to '%s'" file-path jpg-path)
+        (let ((result (shell-command-to-string (format "magick %s %s" file-path jpg-path))))
+          (unless (equal result "")
+            (error "Error during conversion: %s" result)))))
+
+    ;; Resize the image
+    (unless (file-exists-p resized-path)
+      (message "Resizing '%s' to 512x512" file-path)
+      (let ((result (shell-command-to-string (format "magick %s -resize 512x512 %s" file-path resized-path))))
+        (unless (equal result "")
+          (error "Error during resizing: %s" result))))
+
+    ;; Use the resized path
+    (setq file-path resized-path)
+
+    ;; Encode image in base64
+    (let ((buffer-encoded (base64-encode-string
+                           (with-temp-buffer
+                             (insert-file-contents-literally file-path)
+                             (buffer-string)))))
+      (let ((params `(("model" . "gpt-4o")
+                      ("messages" . (((role . "user")
+                                      (content . ["This is a business card."
+                                                  "Extract all entities and label them. For example, first name, last name, company."
+                                                  "Return ONLY the result as a key-value list with the syntax:"
+                                                  "`- key :: value  `"
+                                                  "Example: "
+                                                  "`- First Name :: John`"
+                                                  "`- Last Name :: Doe`"
+                                                  (("image" . ,buffer-encoded))]))))
+                      ("max_tokens" . 1000)
+                      ("temperature" . 0)))
+            (headers `(("Authorization" . ,(format "Bearer %s" (auth-source-get-api-key)))
+                       ("Content-Type" . "application/json"))))
+        (request
+          "https://api.openai.com/v1/chat/completions"
+          :type "POST"
+          :data (json-encode params)
+          :headers headers
+          :sync t  ; HACK use sync and buffer-local variable `result` for this demo
+          :parser 'json-read
+          :complete (cl-function
+                     (lambda (&key data &allow-other-keys)
+                       (let ((parsed-card (alist-get 'content (alist-get 'message (elt (alist-get 'choices data) 0)))))
+                         (setq result parsed-card))))
+          :error (cl-function
+                  (lambda (&key error-thrown &key data &allow-other-keys)
+                    (message "Error: %s\nResponse: %s"
+                             error-thrown
+                             (json-encode data)))))))
+    nil))
+#+end_src
+
+#+RESULTS:
+: parse-business-card
+
+#+begin_src emacs-lisp
+(parse-business-card "./Test_Card.pdf")
+result
+#+end_src
+
+#+RESULTS:
+#+begin_example
+- First Name :: Alessandro
+- Last Name :: Wollek
+- Degree :: M.Sc.
+- Job Title :: Scientific employee
+- Company :: Technical University of Munich
+- Department :: Munich Institute of Biomedical Engineering
+- Division :: Computational Imaging and Inverse Problems
+- Address :: Boltzmannstrasse 11, 85748 Garching, Germany
+- Phone Number :: +49 89 289 10840
+- Email :: alessandro.wollek@tum.de
+- Website :: ciip.in.tum.de
+#+end_example
